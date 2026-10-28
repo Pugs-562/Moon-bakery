@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Moon Bakery Tycoon 3D</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;user-select:none}
+html,body{height:100%;overflow:hidden;background:#0b0830;font-family:'Trebuchet MS','Segoe UI',sans-serif;color:#fff}
+#gl{position:fixed;inset:0;width:100%;height:100%;touch-action:none}
+#hud{position:fixed;top:14px;left:14px;padding:12px 18px;border-radius:16px;background:rgba(15,10,40,0.85);border:2px solid rgba(255,216,122,0.4);backdrop-filter:blur(6px);box-shadow:0 8px 32px rgba(0,0,0,0.5);z-index:10}
+#cash{font-size:2.2rem;font-weight:900;color:#ffe38a;text-shadow:0 2px 0 #7a3b00}
+#hud small{display:block;opacity:0.9;font-size:0.85rem;margin-top:2px;color:#a8d8ff}
+#obj{position:fixed;top:14px;left:50%;transform:translateX(-50%);padding:10px 18px;border-radius:24px;background:rgba(15,10,40,0.85);border:2px solid rgba(255,216,122,0.4);font-weight:700;text-align:center;max-width:50vw;font-size:0.95rem;z-index:10;box-shadow:0 8px 32px rgba(0,0,0,0.5)}
+#snd{position:fixed;top:14px;right:14px;width:44px;height:40px;border:0;border-radius:12px;background:rgba(15,10,40,0.85);border:2px solid rgba(255,216,122,0.4);color:#fff;font-size:1.2rem;cursor:pointer;z-index:10}
+#hint{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);opacity:0.8;font-size:0.85rem;white-space:nowrap;background:rgba(0,0,0,0.6);padding:6px 14px;border-radius:20px;pointer-events:none;z-index:10}
+#joy{position:fixed;left:24px;bottom:30px;width:130px;height:130px;border-radius:50%;background:rgba(255,255,255,0.08);border:2px solid rgba(255,255,255,0.2);display:none;touch-action:none;z-index:10}
+#joy i{position:absolute;left:40px;top:40px;width:50px;height:50px;border-radius:50%;background:rgba(255,216,122,0.8);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+@media(pointer:coarse){#joy{display:block}#hint{display:none}}
+#toast{position:fixed;left:50%;bottom:60px;transform:translateX(-50%);background:rgba(0,0,0,0.85);border:2px solid rgba(255,216,122,0.6);padding:10px 20px;border-radius:20px;z-index:30;opacity:0;transition:opacity 0.3s ease;pointer-events:none;text-align:center;font-weight:bold;color:#ffe38a}
+#toast.on{opacity:1}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hud"><div id="cash">$0</div><small id="ips">Income: $0/s</small><small id="sub">Walk onto glowing pads to buy upgrades!</small></div>
+<div id="obj">Objective: Claim the Free Register!</div>
+<button id="snd">🔊</button>
+<div id="hint">WASD / Arrows: Move · Drag screen or Q/E: Rotate Camera</div>
+<div id="joy"><i></i></div>
+<div id="toast"></div>
+
+<script>
+// --- AUDIO SYNTHESIZER ---
+class SoundManager {
+  constructor() {
+    this.enabled = true;
+    this.ctx = null;
+  }
+  init() {
+    if (!this.ctx) {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+  }
+  play(type) {
+    if (!this.enabled || !this.ctx) return;
+    try {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      const now = this.ctx.currentTime;
+      
+      if (type === 'buy') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.exponentialRampToValueAtTime(600, now + 0.15);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+        osc.start(now);
+        osc.stop(now + 0.15);
+      } else if (type === 'cash') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(500, now);
+        osc.frequency.setValueAtTime(800, now + 0.08);
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+        osc.start(now);
+        osc.stop(now + 0.2);
+      }
+    } catch(e) {}
+  }
+}
+const sfx = new SoundManager();
+
+document.getElementById('snd').addEventListener('click', () => {
+  sfx.init();
+  sfx.enabled = !sfx.enabled;
+  document.getElementById('snd').textContent = sfx.enabled ? '🔊' : '🔇';
+});
+
+// --- GAME DEFINITION & TYCOON DATA ---
+const UPGRADES = [
+  { id: 'register', name: 'Free Register', cost: 0, income: 1, prereq: null, x: 0, z: -2, modelType: 'register' },
+  { id: 'oven1', name: 'Bakery Oven I', cost: 50, income: 4, prereq: 'register', x: -4, z: -6, modelType: 'oven' },
+  { id: 'counter1', name: 'Pastry Counter', cost: 150, income: 12, prereq: 'oven1', x: 4, z: -6, modelType: 'counter' },
+  { id: 'coffee', name: 'Coffee Station', cost: 350, income: 25, prereq: 'counter1', x: -4, z: 2, modelType: 'coffee' },
+  { id: 'oven2', name: 'Bakery Oven II', cost: 700, income: 50, prereq: 'coffee', x: 4, z: 2, modelType: 'oven' },
+  { id: 'tables', name: 'Customer Seating', cost: 1500, income: 100, prereq: 'oven2', x: 0, z: 6, modelType: 'tables' },
+  { id: 'baker', name: 'Auto-Baker Bot', cost: 3500, income: 250, prereq: 'tables', x: -4, z: -2, modelType: 'baker' },
+  { id: 'vip', name: 'VIP Lounge', cost: 8000, income: 600, prereq: 'baker', x: 4, z: -2, modelType: 'vip' }
+];
+
+let playerCash = 0;
+let unlockedUpgrades = {};
+UPGRADES.forEach(u => unlockedUpgrades[u.id] = false);
+
+// --- THREE.JS SCENE SETUP ---
+const canvas = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#0b0830');
+scene.fog = new THREE.FogExp2('#0b0830', 0.035);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 12, 14);
+
+// Lighting
+const ambientLight = new THREE.AmbientLight(0xfff5e6, 0.7);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xfffaed, 1.2);
+dirLight.position.set(10, 20, 10);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.width = 1024;
+dirLight.shadow.mapSize.height = 1024;
+scene.add(dirLight);
+
+// Bakery Room Environment
+const floorGeo = new THREE.PlaneGeometry(30, 30);
+const floorMat = new THREE.MeshStandardMaterial({ color: 0x1b1446, roughness: 0.8 });
+const floor = new THREE.Mesh(floorGeo, floorMat);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+// Walls
+const wallMat = new THREE.MeshStandardMaterial({ color: 0x2d236b, roughness: 0.6 });
+const wall1 = new THREE.Mesh(new THREE.BoxGeometry(30, 8, 1), wallMat);
+wall1.position.set(0, 4, -12);
+scene.add(wall1);
+
+const wall2 = new THREE.Mesh(new THREE.BoxGeometry(1, 8, 30), wallMat);
+wall2.position.set(-15, 4, 0);
+scene.add(wall2);
+
+const wall3 = new THREE.Mesh(new THREE.BoxGeometry(1, 8, 30), wallMat);
+wall3.position.set(15, 4, 0);
+scene.add(wall3);
+
+// --- PLAYER SETUP ---
+const playerGroup = new THREE.Group();
+const bodyGeo = new THREE.CapsuleGeometry(0.4, 0.8, 4, 8);
+const bodyMat = new THREE.MeshStandardMaterial({ color: 0xffb02e, roughness: 0.3 });
+const playerMesh = new THREE.Mesh(bodyGeo, bodyMat);
+playerMesh.position.y = 0.8;
+playerMesh.castShadow = true;
+playerGroup.add(playerMesh);
+
+// Chef hat
+const hatGeo = new THREE.CylinderGeometry(0.3, 0.35, 0.4, 8);
+const hatMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+const hatMesh = new THREE.Mesh(hatGeo, hatMat);
+hatMesh.position.y = 1.4;
+playerGroup.add(hatMesh);
+
+scene.add(playerGroup);
+
+// --- TYCOON PADS & OBJECTS GENERATION ---
+const padMeshes = {};
+const objectMeshes = {};
+const padGeo = new THREE.RingGeometry(0.8, 1.1, 32);
+padGeo.rotateX(-Math.PI / 2);
+
+UPGRADES.forEach(upg => {
+  // Glowing Pad
+  const padMat = new THREE.MeshBasicMaterial({ color: 0xffd87a, side: THREE.DoubleSide, transparent: true, opacity: 0.8 });
+  const pad = new THREE.Mesh(padGeo, padMat);
+  pad.position.set(upg.x, 0.02, upg.z);
+  scene.add(pad);
+  padMeshes[upg.id] = pad;
+
+  // Floating Label / Canvas for Pad
+  const canvasLabel = document.createElement('div');
+  canvasLabel.style.position = 'absolute';
+  canvasLabel.style.transform = 'translate(-50%, -50%)';
+  canvasLabel.style.padding = '6px 12px';
+  canvasLabel.style.borderRadius = '12px';
+  canvasLabel.style.background = 'rgba(0,0,0,0.8)';
+  canvasLabel.style.border = '2px solid #ffd87a';
+  canvasLabel.style.color = '#ffe38a';
+  canvasLabel.style.fontWeight = 'bold';
+  canvasLabel.style.fontSize = '0.8rem';
+  canvasLabel.style.pointerEvents = 'none';
+  canvasLabel.style.display = 'none';
+  canvasLabel.style.zIndex = '5';
+  document.body.appendChild(canvasLabel);
+  upg.domLabel = canvasLabel;
+
+  // Placeholder 3D Object (built when purchased)
+  const objGroup = new THREE.Group();
+  objGroup.position.set(upg.x, 0, upg.z);
+  objGroup.visible = false;
+  
+  // Construct model based on type
+  const boxMat = new THREE.MeshStandardMaterial({ color: 0x5d4037, roughness: 0.4 });
+  const metalMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.8, roughness: 0.2 });
+  
+  if (upg.modelType === 'register') {
+    const reg = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), new THREE.MeshStandardMaterial({ color: 0xe53935 }));
+    reg.position.y = 0.4;
+    objGroup.add(reg);
+  } else if (upg.modelType === 'oven') {
+    const oven = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.8, 1.2), metalMat);
+    oven.position.y = 0.9;
+    objGroup.add(oven);
+  } else if (upg.modelType === 'counter') {
+    const counter = new THREE.Mesh(new THREE.BoxGeometry(2, 1, 1), boxMat);
+    counter.position.y = 0.5;
+    objGroup.add(counter);
+  } else if (upg.modelType === 'coffee') {
+    const machine = new THREE.Mesh(new THREE.BoxGeometry(1, 1.2, 1), new THREE.MeshStandardMaterial({ color: 0x2196f3 }));
+    machine.position.y = 0.6;
+    objGroup.add(machine);
+  } else if (upg.modelType === 'tables') {
+    const table = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.8, 0.9, 16), boxMat);
+    table.position.y = 0.45;
+    objGroup.add(table);
+  } else if (upg.modelType === 'baker') {
+    const bot = new THREE.Mesh(new THREE.SphereGeometry(0.6, 16, 16), metalMat);
+    bot.position.y = 0.8;
+    objGroup.add(bot);
+  } else if (upg.modelType === 'vip') {
+    const vipSign = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 0.2), new THREE.MeshStandardMaterial({ color: 0xffd700 }));
+    vipSign.position.y = 1.5;
+    objGroup.add(vipSign);
+  }
+
+  scene.add(objGroup);
+  objectMeshes[upg.id] = objGroup;
+});
+
+// --- CONTROLS & INPUT ---
+const keys = { w: false, a: false, s: false, d: false, q: false, e: false };
+window.addEventListener('keydown', e => {
+  if (e.key === 'w' || e.key === 'ArrowUp') keys.w = true;
+  if (e.key === 's' || e.key === 'ArrowDown') keys.s = true;
+  if (e.key === 'a' || e.key === 'ArrowLeft') keys.a = true;
+  if (e.key === 'd' || e.key === 'ArrowRight') keys.d = true;
+  if (e.key === 'q') keys.q = true;
+  if (e.key === 'e') keys.e = true;
+});
+window.addEventListener('keyup', e => {
+  if (e.key === 'w' || e.key === 'ArrowUp') keys.w = false;
+  if (e.key === 's' || e.key === 'ArrowDown') keys.s = false;
+  if (e.key === 'a' || e.key === 'ArrowLeft') keys.a = false;
+  if (e.key === 'd' || e.key === 'ArrowRight') keys.d = false;
+  if (e.key === 'q') keys.q = false;
+  if (e.key === 'e') keys.e = false;
+});
+
+// Virtual Joystick for Mobile
+let joyMove = { x: 0, y: 0 };
+const joyEl = document.getElementById('joy');
+const joyThumb = joyEl.querySelector('i');
+let joyActive = false;
+let joyCenter = { x: 0, y: 0 };
+
+joyEl.addEventListener('pointerdown', e => {
+  joyActive = true;
+  const rect = joyEl.getBoundingClientRect();
+  joyCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  updateJoy(e);
+});
+window.addEventListener('pointermove', e => {
+  if (joyActive) updateJoy(e);
+});
+window.addEventListener('pointerup', () => {
+  joyActive = false;
+  joyMove = { x: 0, y: 0 };
+  joyThumb.style.transform = `translate(0px, 0px)`;
+});
+
+function updateJoy(e) {
+  const dx = e.clientX - joyCenter.x;
+  const dy = e.clientY - joyCenter.y;
+  const dist = Math.min(50, Math.sqrt(dx*dx + dy*dy));
+  const angle = Math.atan2(dy, dx);
+  joyMove.x = (Math.cos(angle) * dist) / 50;
+  joyMove.y = (Math.sin(angle) * dist) / 50;
+  joyThumb.style.transform = `translate(${Math.cos(angle)*dist}px, ${Math.sin(angle)*dist}px)`;
+}
+
+// Mouse / Touch Camera Orbit Dragging
+let isDragging = false;
+let prevMouseX = 0;
+let camAngle = 0;
+
+window.addEventListener('pointerdown', e => {
+  if (e.clientX > window.innerWidth / 2 && e.clientY > 100) {
+    isDragging = true;
+    prevMouseX = e.clientX;
+  }
+});
+window.addEventListener('pointermove', e => {
+  if (isDragging) {
+    const dx = e.clientX - prevMouseX;
+    camAngle -= dx * 0.005;
+    prevMouseX = e.clientX;
+  }
+});
+window.addEventListener('pointerup', () => { isDragging = false; });
+
+// --- TOAST NOTIFICATION ---
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('on');
+  setTimeout(() => t.classList.remove('on'), 2000);
+}
+
+// --- GAME LOOP & LOGIC ---
+let clock = new THREE.Clock();
+let totalIncomePerSec = 0;
+
+function updateTycoonState() {
+  let income = 0;
+  let nextGoalText = "Claim the Free Register!";
+
+  UPGRADES.forEach(upg => {
+    const isUnlocked = upg.prereq === null || unlockedUpgrades[upg.prereq];
+    const isPurchased = unlockedUpgrades[upg.id];
+
+    const pad = padMeshes[upg.id];
+    const label = upg.domLabel;
+
+    if (!isUnlocked) {
+      // Hide pad & label if prerequisite not met
+      pad.visible = false;
+      label.style.display = 'none';
+    } else if (!isPurchased) {
+      // Show pad & label since it's ready to buy
+      pad.visible = true;
+      label.style.display = 'block';
+
+      // Position HTML label above pad
+      const v = new THREE.Vector3(upg.x, 0.5, upg.z);
+      v.project(camera);
+      const x = (v.x *  .5 + .5) * window.innerWidth;
+      const y = (v.y * -.5 + .5) * window.innerHeight;
+      label.style.left = `${x}px`;
+      label.style.top = `${y}px`;
+      
+      const canAfford = playerCash >= upg.cost;
+      label.innerHTML = `${upg.name}<br><span style="color:${canAfford ? '#4cd137' : '#ff4757'}">$${upg.cost}</span>`;
+      label.style.borderColor = canAfford ? '#4cd137' : '#ffd87a';
+
+      // Check player collision with pad
+      const dist = playerGroup.position.distanceTo(new THREE.Vector3(upg.x, 0, upg.z));
+      if (dist < 1.3 && canAfford) {
+        playerCash -= upg.cost;
+        unlockedUpgrades[upg.id] = true;
+        pad.visible = false;
+        label.style.display = 'none';
+        objectMeshes[upg.id].visible = true;
+        sfx.play('buy');
+        showToast(`Unlocked ${upg.name}!`);
+      }
+    } else {
+      pad.visible = false;
+      label.style.display = 'none';
+      income += upg.income;
+    }
+  });
+
+  totalIncomePerSec = income;
+  document.getElementById('cash').textContent = `$${Math.floor(playerCash)}`;
+  document.getElementById('ips').textContent = `Income: $${totalIncomePerSec}/s`;
+
+  // Update objective text
+  const nextUpg = UPGRADES.find(u => (u.prereq === null || unlockedUpgrades[u.prereq]) && !unlockedUpgrades[u.id]);
+  if (nextUpg) {
+    document.getElementById('obj').textContent = `Objective: Buy ${nextUpg.name} ($${nextUpg.cost})`;
+  } else {
+    document.getElementById('obj').textContent = `🎉 Bakery Tycoon Mastered! 🎉`;
+  }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+
+  // Passive cash accumulation
+  playerCash += totalIncomePerSec * delta;
+
+  // Player Movement
+  let moveX = 0, moveZ = 0;
+  if (keys.w) moveZ -= 1;
+  if (keys.s) moveZ += 1;
+  if (keys.a) moveX -= 1;
+  if (keys.d) moveX += 1;
+
+  if (joyActive) {
+    moveX += joyMove.x;
+    moveZ += joyMove.y;
+  }
+
+  if (keys.q) camAngle -= 1.5 * delta;
+  if (keys.e) camAngle += 1.5 * delta;
+
+  if (moveX !== 0 || moveZ !== 0) {
+    const speed = 6 * delta;
+    // Align movement with camera angle
+    const angle = camAngle;
+    const rx = moveX * Math.cos(angle) - moveZ * Math.sin(angle);
+    const rz = moveX * Math.sin(angle) + moveZ * Math.cos(angle);
+
+    playerGroup.position.x += rx * speed;
+    playerGroup.position.z += rz * speed;
+
+    // Boundaries
+    playerGroup.position.x = Math.max(-13, Math.min(13, playerGroup.position.x));
+    playerGroup.position.z = Math.max(-10, Math.min(10, playerGroup.position.z));
+
+    // Rotate player towards movement
+    playerGroup.rotation.y = Math.atan2(rx, rz);
+  }
+
+  // Smooth Camera Follow
+  const targetCamX = playerGroup.position.x + Math.sin(camAngle) * 12;
+  const targetCamZ = playerGroup.position.z + Math.cos(camAngle) * 12;
+  camera.position.x += (targetCamX - camera.position.x) * 5 * delta;
+  camera.position.z += (targetCamZ - camera.position.z) * 5 * delta;
+  camera.position.y = 11;
+  camera.lookAt(playerGroup.position.x, playerGroup.position.y + 0.5, playerGroup.position.z);
+
+  // Pulse pads
+  const time = clock.getElapsedTime();
+  Object.keys(padMeshes).forEach(id => {
+    if (padMeshes[id].visible) {
+      padMeshes[id].scale.setScalar(1 + Math.sin(time * 5) * 0.1);
+    }
+  });
+
+  updateTycoonState();
+  renderer.render(scene, camera);
+}
+
+// Window resizing
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+animate();
+</script>
+</body>
+</html>
